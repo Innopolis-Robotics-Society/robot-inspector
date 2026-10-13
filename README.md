@@ -1,330 +1,159 @@
-# robot-assistants (ROS 2 Humble)
+# Робот-инспектор (ROS 2 Humble)
 
-Docker-first workspace for a lab Assistants project:
+Манипулятор с камерой проверяет деталь по трём критериям, после чего сортирует её в лоток «годно» / «брак»:
 
-**UR10e + USB camera + AprilTags + YOLO + voice control + MoveIt (+ RViz)**
+1. **Ржавчина** — ResNet-классификатор + UNet-сегментация (ONNX Runtime).
+2. **Печатная плата** — YOLO находит компоненты и сравнивает с эталоном, снятым при калибровке (пропавшие / сдвинутые компоненты).
+3. **Шестерни** — классическое CV (Hough + подсчёт зубьев), сравнение с эталоном из калибровки.
 
-The main entrypoint launches a complete stack for the default demo scenario (pick/place behaviors).
+Деталь считается годной, если: `ржавчины нет` **И** `плата ок` **И** `шестерни ок`.
 
----
-
-## Supported environment
-
-- **ROS 2:** Humble
-- **Run mode:** Docker-first (CPU-only works; GPU optional for CV)
-- **Robots:** UR10e (real robot or URSim)
-- **Cameras:** USB UVC via `v4l2_camera` (depth cameras planned: RealSense / Azure Kinect)
-- **Voice input:** host microphone (audio passthrough into container)
-- **Gripper:** SCHUNK EGP-64 (controlled via ROS service; wired through a control box pins)
+Сценарий запускается голосовой командой (английский Vosk) или публикацией в `/voice/command`; итог озвучивается через TTS (Kokoro).
 
 ---
 
-## Repository structure (packages)
+## Оборудование
 
-- **`iros_assistant_bringup`**  
-  Scenario-level launch files and “glue” nodes/services:
-  - UR bringup wrapper (`launch/robots/ur.launch.py`)
-  - demo scenario entrypoint (`launch/bringup.launch.py`)
-  - tools (`launch/tools/*`), perception (`launch/perception/*`), world environment (`launch/world/*`)
-  - C++ nodes: `go_to_frame`, `exec_ik_move`, `gripper_control`
-  - services in `srv/*`
-
-- **`iros_camera`**  
-  Multi-camera launcher and camera registry:
-  - `config/cameras.yaml` — camera list (device path, calibration file, TF, params)
-  - `launch/camera.launch.py` — start one or multiple cameras by name
-  - `calibration/*.yaml` — camera calibration files (`camera_info_url`)
-
-- **`iros_april_tags`**  
-  AprilTag detection + rectification pipeline:
-  - `launch/detect_apriltags.launch.py` — namespaced pipeline per camera
-  - `config/apriltag.yaml` — tag ids/frames/sizes and detector settings
-
-- **`iros_tool_recognition`**  
-  YOLO-based object localization node(s):
-  - `ins_search.py` — detects an object, publishes debug image + target TF/Point
-  - model stored in `models/`
-
-- **`iros_ru_voice_recognision`**  
-  Vosk-based Russian voice control:
-  - `launch/voice_control.launch.py`
-  - Vosk model stored in `models/`
-
-- **`iros_assistant_behavior`**  
-  Higher-level behavior node(s) (e.g., voice command executor).
+- **Манипулятор:** RoboPro RC10 (по умолчанию) или UR (ur3e / ur5e / ur10e / ur16e / ur20 / ur30)
+- **Камера:** USB UVC через `v4l2_camera` (по умолчанию `/dev/video0`), закреплена на инструменте
+- **Захват:** управляется цифровыми выходами контроллера (`gripper_backend: controller`, пины в `iros_robopro_controller/config/driver.yaml`)
+- **Микрофон / динамики** хоста (проброшены в контейнер через PulseAudio)
+- **GPU NVIDIA** желателен (YOLO для платы); ржавчина по умолчанию считается на CPU
 
 ---
 
-## Quick start (Docker-first)
+## Пакеты
 
-1. **Clone**
+| Пакет | Назначение |
+|---|---|
+| `iros_assistant_bringup` | Launch-сценарии (`launch/scenario/inspector.launch.py`, `test_inspector.launch.py`), точки осмотра/сортировки (`launch/world/inspection_poses.launch.py`), обёртка UR (`launch/robots/ur.launch.py`), конфиги RViz |
+| `iros_robopro_controller` | Драйвер RoboPro RC10 (`rc_robot_driver`): сервисы `/go_to_frame`, `/gripper_action`, `/gripper_lock`, публикует TF и `tool_pose` / `flange_pose` |
+| `iros_cv_session_hub` | Хаб CV: по триггеру вызывает нужный детектор, собирает результат, публикует общий отчёт и `ok`. `launch/cv_stack.launch.py` поднимает весь CV-стек |
+| `iros_rust_detect_ros` | Детектор ржавчины (`rust_detect_node`), модели в `onnx_models/` |
+| `iros_cv_algorithms` | `pcb_check` (плата, модель `algos/models/yolo11s_best.pt`), `gears_check` (шестерни; алгоритм в `gear_counter.py`) |
+| `iros_assistant_behavior` | Узел `inspector`: исполняет рутины из `config/routines.yaml` по командам из `/voice/command` |
+| `iros_voice_controlled_robot` | Распознавание речи (Vosk, en), фразы → интенты (`config/tools_config.yaml`), публикует `/voice/command` |
+| `iros_text_to_speach` | Озвучивает итоговый отчёт `/cv_hub/report` (Kokoro TTS) |
+| `iros_custom_msgs` | `GoToFrame`, `GripperAction`, `MoveToPose`, `DetectObject`, `SetReferenceMesh`; сообщения `PcbCheck`, `Detection2D`, `Statistics`, `ICPAlignmentStatistic` |
+| `iros_camera` | Реестр камер (`config/cameras.yaml`) и калибровки — для мультикамерных сценариев |
+
+Пакеты `iros_april_tags`, `iros_tool_recognition`, `iros_ru_voice_recognision`, `launch/bringup.launch.py` и `launch/perception/*` относятся к сценарию робота-ассистента (pick/place) и инспектором не используются.
+
+---
+
+## Быстрый старт
+
+### 1. Контейнер
+
 ```bash
-git clone https://github.com/Innopolis-Robotics-Society/robot-assistants.git
+git clone -b inspector https://github.com/Innopolis-Robotics-Society/robot-assistants.git
 cd robot-assistants
-```
-
-2. **Build + run container**
-
-* Use `docker-compose.yaml` / `Dockerfile` in the repo root.
-* Make sure the container has access to:
-
-  * camera devices (`/dev/video*` or `/dev/v4l/by-id/*`)
-  * audio (`/dev/snd`)
-  * (optional) GPU if available
-
-Typical workflow:
-
-```bash
-docker compose up --terminal
-```
-
-Attach to the running container:
-
-```bash
+docker compose up terminal          # готовый образ fabook/cv:v0.0.5; Dockerfile в корне (CUDA 12.9)
 docker compose exec terminal bash
 ```
 
-3. **Build workspace inside container**
+Репозиторий монтируется в контейнер как `/home/mobile/ros2_ws/src`. Нужны: NVIDIA Container Toolkit, `/dev/video0`, `/dev/snd`, X11 (`xhost +local:` на хосте для RViz).
+
+### 2. Сборка
 
 ```bash
+cd /home/mobile/ros2_ws
 colcon build --symlink-install
 source install/setup.bash
 ```
 
----
+### 3. Сеть до робота (на хосте)
 
-## Configure cameras
-
-Edit: **`iros_camera/config/cameras.yaml`**
-
-Each camera is defined by a name and at minimum:
-
-* `video_device`: a stable path recommended: `/dev/v4l/by-id/...`
-* `camera_info`: calibration YAML path (relative to the `iros_camera` share dir)
-* `frame_id`: child TF frame for this camera (recommended: `*_optical_frame`)
-* `tf`: static transform (parent frame + xyz + rpy)
-* `params`: optional per-camera driver params
-
-Example shape:
-
-```yaml
-cameras:
-  mook_laptop_camera:
-    video_device: "/dev/v4l/by-id/usb-...-video-index0"
-    camera_info: "calibration/mook_laptop_camera.yaml"
-    frame_id: "mook_laptop_camera_optical_frame"
-    tf:
-      parent_frame: "base_link"
-      xyz: [0.10, 0.05, 0.20]
-      rpy: [0.0, 0.0, 0.0]
-    params:
-      image_size: [640, 480]
+```bash
+sudo ./scripts/set_robopro_connection.sh [интерфейс]   # робот 10.10.10.10, хост 10.10.10.1/24
 ```
 
-> If `image_proc/rectify_node` says the camera is **uncalibrated**, verify that:
->
-> * `camera_info_url` points to the correct YAML
-> * the driver publishes non-zero `CameraInfo` (`K/D/R/P`)
-> * the camera resolution matches the calibration (`image_width/height`)
+Для UR — `scripts/set_ur_connection.sh`.
+
+### 4. Запуск
+
+```bash
+# Полный сценарий: камера, TF точек, драйвер робота, CV-стек, голос, TTS, behavior, RViz
+ros2 launch iros_assistant_bringup inspector.launch.py
+
+# UR вместо RoboPro
+ros2 launch iros_assistant_bringup inspector.launch.py robot_model:=ur10e robot_ip:=<IP>
+```
+
+| Аргумент | По умолчанию | |
+|---|---|---|
+| `robot_model` | `robopro` | `robopro` или тип UR (`ur10e`, …) |
+| `robot_ip` | `10.10.10.10` | IP робота (для RoboPro IP задаётся в `driver.yaml`) |
+| `video_device` | `/dev/video0` | Камера |
+
+**Отладка CV без робота:** `test_inspector.launch.py` — только камера, TF, CV-стек и RViz (`test_inspector.rviz`), без драйвера, голоса и behavior. Детекторы дёргаются вручную через сервисы (см. ниже).
 
 ---
 
-## Main demo (one command)
+## Рабочий цикл
 
-**Entrypoint:**
+Рутины описаны в `iros_assistant_behavior/config/routines.yaml`. Запуск — голосом или вручную:
 
 ```bash
-ros2 launch iros_assistant_bringup bringup.launch.py robot_ip:=<ROBOT_OR_URSIM_IP>
+ros2 topic pub --once /voice/command std_msgs/msg/String \
+  "{data: '{\"intent\": \"calibration\", \"confidence\": 100}'}"
 ```
 
-Common arguments you’ll typically use:
+| Интент | Фразы | Что делает |
+|---|---|---|
+| `calibration` | calibrate, configure | Едет в `poi_pcb` → эталон платы; едет в `poi_gear_common` → эталон шестерён. **Выполнить один раз на эталонной (годной) детали** |
+| `inspect` | inspection, check, inspect | Ржавчина (`poi_gear_common`) → плата (`poi_pcb`) → шестерни (`poi_gear_common`) → публикация отчёта → берёт деталь (`pose_pick`) → кладёт в `pose_drop_ok` или `pose_drop_nok` по `/cv_hub/ok` |
+| `reset` | clear, reset | Сбрасывает эталоны платы и шестерён |
 
-* `robot_ip:=...` (UR10e)
-* `ur_type:=ur10e`
-* camera selection (passed into the camera + perception parts):
+`confidence` должен быть ≥ `min_confidence` (50). Рутина — это список шагов `service` / `sleep` / `wait_topic` / `branch`; новые сценарии добавляются там же без правки кода.
 
-  * `cameras:=mook_laptop_camera` (single)
-  * `cameras:=mook_laptop_camera,marat_camera` (multiple)
-* multi-robot namespaces (future): `namespace:=robot1` etc.
+### Точки (TF)
 
-> The assistant scenario currently assumes **all components are enabled**:
-> camera, rectification, AprilTags, YOLO, voice, MoveIt, RViz.
+Все точки — статические TF от `world` в `iros_assistant_bringup/launch/world/inspection_poses.launch.py`:
+`pose_up`, `poi_pcb`, `poi_gear_common`, `pose_pick`, `pose_pick_up`, `pose_drop_ok`, `pose_drop_ok_up`, `pose_drop_nok`, `pose_drop_nok_up`.
+
+**При переносе стенда эти координаты нужно перемерить.** Там же — `world_to_base_*` и TCP (`flange_to_tool_*`) в `iros_robopro_controller/config/driver.yaml`.
 
 ---
 
-## Running individual subsystems
+## Сервисы и топики
 
-### Camera only
-
-```bash
-ros2 launch iros_camera camera.launch.py cameras:=mook_laptop_camera
-```
-
-### AprilTags (for a specific camera namespace)
-
-/home/mobile/ros2_ws/src/iros_cv_algorithms/iros_cv_algorithms/algos/models/yolo11s_best.pt
+### Манипулятор (`rc_robot_driver`)
 
 ```bash
-ros2 launch iros_april_tags detect_apriltags.launch.py camera:=mook_laptop_camera
-```
-
-### CV node (YOLO)
-
-If your CV launch expects rectified images:
-
-* ensure `image_rect` and `camera_info` are available (often via the AprilTags pipeline)
-
----
-
-## Services (iros_assistant_bringup)
-
-Service definitions live in: `iros_custom_msgs/srv/`
-
-### `DetectObject` (`iros_custom_msgs/srv/DetectObject.srv`)
-
-Request:
-```text
-string class_name   # class name from model.names (e.g. "hammer")
-float32 duration    # tracking duration in seconds; <= 0 means "until stopped"
-````
-
-Response:
-
-```text
-bool accepted
-string message
-```
-
-Typical usage:
-
-* Starts/arms the YOLO-based detector to track a specific object class for a limited time window or indefinitely.
-* The node usually publishes:
-
-  * debug image topic (overlay / mask)
-  * `PointStamped` with the measured target point
-  * a TF frame for the detected target (if enabled in the node)
-
-Example call:
-
-```bash
-ros2 service call /detect_object iros_custom_msgs/srv/DetectObject "{class_name: 'hammer', duration: 5.0}"
-```
-
----
-
-### `GoToFrame` (`iros_custom_msgs/srv/GoToFrame.srv`)
-
-Request:
-
-```text
-string frame
-```
-
-Response:
-
-```text
-bool success
-string message
-```
-
-Typical usage:
-
-* Commands the robot to move to a target defined by a TF frame (e.g. `pose_forward`, `pose_watering`, or a perception-generated frame like `hoba_target`).
-
-Example call:
-
-```bash
-ros2 service call /go_to_frame iros_custom_msgs/srv/GoToFrame "{frame: 'pose_forward'}"
-```
-
----
-
-### `GripperAction` (`iros_custom_msgs/srv/GripperAction.srv`)
-
-Request:
-
-```text
-bool open   # true = open, false = close
-```
-
-Response:
-
-```text
-bool success
-string message
-```
-
-Typical usage:
-
-* Opens/closes the SCHUNK EGP-64 gripper via control box wiring.
-
-Examples:
-
-```bash
+ros2 service call /go_to_frame iros_custom_msgs/srv/GoToFrame "{frame: 'poi_pcb'}"
 ros2 service call /gripper_action iros_custom_msgs/srv/GripperAction "{open: true}"
-ros2 service call /gripper_action iros_custom_msgs/srv/GripperAction "{open: false}"
+ros2 service call /gripper_lock std_srvs/srv/SetBool "{data: true}"
 ```
+
+### CV-хаб (`/iros_cv_session_hub`, все `std_srvs/Trigger`)
+
+| Сервис | Действие |
+|---|---|
+| `~/run_rust` | вызывает `/rust_detect/run`, слушает 2 с, запоминает результат |
+| `~/run_pcb` | вызывает `/pcb_inspector/inference` |
+| `~/run_gear` | вызывает `/gears_check/inference` |
+| `~/publish` | однократно публикует сохранённые результаты и серию `/cv_hub/ok` |
+
+Выходы (`/cv_hub/...`): `ok` (Bool), `report` (JSON, его озвучивает TTS), `rust/{prob,detected,report}`, `pcb/{annotated,ok,report}`, `gear/{annotated,ok,report}`.
+
+### Детекторы напрямую
+
+| Узел | Сервисы (`Trigger`) | Топики |
+|---|---|---|
+| `rust_detect_node` | `/rust_detect/run` | `/rust/prob` (Image), `/rust/detected` (Bool) |
+| `pcb_inspector` | `~/calibration`, `~/inference`, `~/reset` | `~/annotated` (Image), `~/report` (JSON) |
+| `gears_check` | `~/calibration`, `~/inference`, `~/reset` | `~/image`, `~/brightened` (Image), `~/data` (JSON) |
+
+Пороги детекторов — аргументы `cv_stack.launch.py` (`rust_thr`, `rust_conf_thr`, `rust_device`, …) и параметры узлов.
 
 ---
 
-### `MoveToPose` (`iros_custom_msgs/srv/MoveToPose.srv`)
+## Известные проблемы
 
-Request:
-
-```text
-geometry_msgs/Pose target
-```
-
-Response:
-
-```text
-bool success
-string message
-```
-
-Typical usage:
-
-* Commands the robot to move to an explicit Cartesian pose target (as a `geometry_msgs/Pose`), typically using MoveIt.
-
-Example call:
-
-```bash
-ros2 service call /move_to_pose iros_custom_msgs/srv/MoveToPose "{
-  target: {
-    position: {x: 0.4, y: 0.0, z: 0.3},
-    orientation: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
-  }
-}"
-```
-
-
----
-
-## Notes on TF / frames (important)
-
-* Cameras are launched in their **own namespace** (camera name). Topics look like:
-
-  * `/<camera>/image_raw`
-  * `/<camera>/camera_info`
-  * `/<camera>/image_rect` (if rectification is running)
-
-* AprilTag TF frame naming can depend on:
-
-  * tag family (`tag36h11`, etc.)
-  * your `apriltag.yaml` mapping (`tag.ids`, `tag.frames`, `tag.sizes`)
-  * `apriltag_ros` parameters controlling TF publishing
-
-If detections exist but TF is missing, verify in the AprilTag node parameters that TF publishing is enabled and that `camera_info` is calibrated (non-zero intrinsics).
-
----
-
-## Scripts
-
-* `scripts/set_ur_connection.sh` — helper for UR connection setup (host-side)
-* `scripts/install_vosk_model.sh` — helper for Vosk model installation (if needed outside Docker)
-
----
-
-## Status
-
-Internal lab project with a minimal public-facing structure. APIs and launch arguments may evolve as multi-robot scenarios are added.
+- `gears_check` публикует `~/image` и `~/data`, а хаб слушает `/gears_check/annotated` и `/gears_check/report`. Результат по шестерням хаб берёт из ответа сервиса, поэтому вердикт верный, но `/cv_hub/gear/annotated` остаётся пустым. Картинку смотреть в `/gears_check/image`.
+- `use_debug_publisher:=true` в `cv_stack.launch.py` ищет `debug_image_publisher` в `iros_cv_algorithms`, а он лежит в `iros_rust_detect_ros`.
+- `iros_rust_detect_ros/launch/rust_detect.launch.py` устарел (старые параметры `.pth`-модели, абсолютный путь) — использовать `cv_stack.launch.py`.
+- Entry point `gear_counter` в `iros_cv_algorithms/setup.py` не работает (в модуле нет `main`) — это библиотека для `gears_check`.
+- В коде есть абсолютные пути `/home/mobile/ros2_ws/...` (модель платы), рассчитанные на контейнер.
+- Альтернативная реализация подсчёта шестерён лежит в ветке `dev` (коммит `final_gears`) и сюда не входит.
