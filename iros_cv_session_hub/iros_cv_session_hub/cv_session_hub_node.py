@@ -115,10 +115,10 @@ class CvSessionHubNode(Node):
         self.declare_parameter("pcb_annotated_topic", "/pcb_inspector/annotated")
 
         # gear
-        self.declare_parameter("gear_infer_service", "/gear_inspector/inference")
+        self.declare_parameter("gear_infer_service", "/gears_check/inference")
         self.declare_parameter("gear_service_timeout_s", 10.0)
-        self.declare_parameter("gear_report_topic", "/gear_inspector/report")
-        self.declare_parameter("gear_annotated_topic", "/gear_inspector/annotated")
+        self.declare_parameter("gear_report_topic", "/gears_check/data")
+        self.declare_parameter("gear_annotated_topic", "/gears_check/image")
 
         # -------- locks/state --------
         self._live_lock = threading.Lock()

@@ -145,15 +145,13 @@ ros2 service call /gripper_lock std_srvs/srv/SetBool "{data: true}"
 | `pcb_inspector` | `~/calibration`, `~/inference`, `~/reset` | `~/annotated` (Image), `~/report` (JSON) |
 | `gears_check` | `~/calibration`, `~/inference`, `~/reset` | `~/image`, `~/brightened` (Image), `~/data` (JSON) |
 
-Пороги детекторов — аргументы `cv_stack.launch.py` (`rust_thr`, `rust_conf_thr`, `rust_device`, …) и параметры узлов.
+Пороги детекторов — аргументы `cv_stack.launch.py` (`rust_thr`, `rust_conf_thr`, `rust_device`, …) и параметры узлов. Детектор ржавчины можно поднять отдельно: `ros2 launch iros_rust_detect_ros rust_detect.launch.py`.
+
+Без камеры CV-стек можно гонять на папке с картинками: `ros2 launch iros_cv_session_hub cv_stack.launch.py use_debug_publisher:=true image_dir:=/path/to/images`.
 
 ---
 
 ## Известные проблемы
 
-- `gears_check` публикует `~/image` и `~/data`, а хаб слушает `/gears_check/annotated` и `/gears_check/report`. Результат по шестерням хаб берёт из ответа сервиса, поэтому вердикт верный, но `/cv_hub/gear/annotated` остаётся пустым. Картинку смотреть в `/gears_check/image`.
-- `use_debug_publisher:=true` в `cv_stack.launch.py` ищет `debug_image_publisher` в `iros_cv_algorithms`, а он лежит в `iros_rust_detect_ros`.
-- `iros_rust_detect_ros/launch/rust_detect.launch.py` устарел (старые параметры `.pth`-модели, абсолютный путь) — использовать `cv_stack.launch.py`.
-- Entry point `gear_counter` в `iros_cv_algorithms/setup.py` не работает (в модуле нет `main`) — это библиотека для `gears_check`.
 - В коде есть абсолютные пути `/home/mobile/ros2_ws/...` (модель платы), рассчитанные на контейнер.
 - Альтернативная реализация подсчёта шестерён лежит в ветке `dev` (коммит `final_gears`) и сюда не входит.

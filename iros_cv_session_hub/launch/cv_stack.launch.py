@@ -82,8 +82,8 @@ def generate_launch_description():
         DeclareLaunchArgument("rust_detected_topic", default_value="/rust/detected"),
         DeclareLaunchArgument("pcb_report_topic", default_value="/pcb_inspector/report"),
         DeclareLaunchArgument("pcb_annotated_topic", default_value="/pcb_inspector/annotated"),
-        DeclareLaunchArgument("gear_report_topic", default_value="/gears_check/report"),
-        DeclareLaunchArgument("gear_annotated_topic", default_value="/gears_check/annotated"),
+        DeclareLaunchArgument("gear_report_topic", default_value="/gears_check/data"),
+        DeclareLaunchArgument("gear_annotated_topic", default_value="/gears_check/image"),
 
         # debug publisher (по умолчанию выключен)
         DeclareLaunchArgument("use_debug_publisher", default_value="false"),
@@ -106,13 +106,13 @@ def generate_launch_description():
 
         # ---------- optional debug image publisher ----------
         Node(
-            package="iros_cv_algorithms",
+            package="iros_rust_detect_ros",
             executable="debug_image_publisher",
             name="debug_image_publisher",
             output="screen",
             condition=IfCondition(use_debug_pub),
             parameters=[{
-                "image_dir": image_dir,
+                "folder": image_dir,
                 "image_topic": image_topic,
                 "rate_hz": debug_rate_hz,
                 "loop": debug_loop,
